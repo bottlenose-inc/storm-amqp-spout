@@ -22,8 +22,14 @@ import backtype.storm.spout.SpoutOutputCollector;
 import backtype.storm.task.TopologyContext;
 import backtype.storm.topology.IRichSpout;
 import backtype.storm.topology.OutputFieldsDeclarer;
-
 import backtype.storm.utils.Utils;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.util.Map;
 
 /**
  * Spout to feed messages into Storm from an AMQP queue.  Each message routed
@@ -101,11 +107,11 @@ public class AMQPSpout implements IRichSpout {
      */
     public static String ERROR_STREAM_NAME = "error-stream";
 
-    private final String amqpHost;
-    private final int amqpPort;
-    private final String amqpUsername;
-    private final String amqpPassword;
-    private final String amqpVhost;
+    /**
+     * @see <a href="http://www.rabbitmq.com/uri-spec.html">AMQP URI Specification</a>
+     */
+    private final URI amqpURI;
+
     private final boolean requeueOnFail;
 
     private final QueueDeclaration queueDeclaration;
@@ -165,14 +171,36 @@ public class AMQPSpout implements IRichSpout {
      * @param requeueOnFail  whether messages should be requeued on failure 
      */
     public AMQPSpout(String host, int port, String username, String password, String vhost, QueueDeclaration queueDeclaration, Scheme scheme, boolean requeueOnFail) {
-        this.amqpHost = host;
-        this.amqpPort = port;
-        this.amqpUsername = username;
-        this.amqpPassword = password;
-        this.amqpVhost = vhost;
+        try {
+            this.amqpURI = new URI("amqp", username + ":" + password, host, port, vhost, "", "");
+        } catch (URISyntaxException e) {
+            throw new RuntimeException(e);
+        }
         this.queueDeclaration = queueDeclaration;
         this.requeueOnFail = requeueOnFail;
         
+        this.serialisationScheme = scheme;
+    }
+
+    /**
+     * Create a new AMQP spout.  When
+     * {@link #open(Map, TopologyContext, SpoutOutputCollector)} is called, it
+     * will declare a queue according to the specified
+     * <tt>queueDeclaration</tt>, subscribe to the queue, and start consuming
+     * messages.  It will use the provided <tt>scheme</tt> to deserialise each
+     * AMQP message into a Storm tuple.
+     *
+     * @param amqpURI  AMQP URI (amqp://)
+     * @param queueDeclaration  declaration of the queue / exchange bindings
+     * @param scheme  {@link backtype.storm.spout.Scheme} used to deserialise
+     *          each AMQP message into a Storm tuple
+     * @param requeueOnFail  whether messages should be requeued on failure
+     */
+    public AMQPSpout(URI amqpURI, QueueDeclaration queueDeclaration, Scheme scheme, boolean requeueOnFail) {
+        this.amqpURI = amqpURI;
+        this.queueDeclaration = queueDeclaration;
+        this.requeueOnFail = requeueOnFail;
+
         this.serialisationScheme = scheme;
     }
 
@@ -349,11 +377,15 @@ public class AMQPSpout implements IRichSpout {
 
         final ConnectionFactory connectionFactory = new ConnectionFactory();
 
-        connectionFactory.setHost(amqpHost);
-        connectionFactory.setPort(amqpPort);
-        connectionFactory.setUsername(amqpUsername);
-        connectionFactory.setPassword(amqpPassword);
-        connectionFactory.setVirtualHost(amqpVhost);
+        try {
+            connectionFactory.setUri(amqpURI);
+        } catch (URISyntaxException e) {
+            throw new IOException(e);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException(e);
+        } catch (KeyManagementException e) {
+            throw new IOException(e);
+        }
 
         this.amqpConnection = connectionFactory.newConnection();
         this.amqpChannel = amqpConnection.createChannel();
